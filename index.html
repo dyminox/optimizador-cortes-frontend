@@ -10,9 +10,17 @@
     .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; align-items:flex-end; }
     label { display:flex; flex-direction:column; font-size:14px; }
     input, select, button, textarea { padding:8px; font-size:14px; }
+    table { border-collapse: collapse; width:100%; max-width:1000px; }
+    th, td { border:1px solid #ddd; padding:6px 8px; font-size:14px; text-align:left; }
+    th { background:#f5f5f5; }
     .legend { margin-top: 8px; font-size:13px; line-height:1.4; white-space:pre-wrap; }
-    .controls { display:flex; gap:8px; align-items:center; }
+    .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .sheet-title { font-weight:700; margin:8px 0; }
+    .small { font-size:12px; color:#666; }
+    .btn-row { display:flex; gap:8px; flex-wrap:wrap; }
+    .danger { background:#fee; border:1px solid #e88; }
+    .ok { background:#efe; border:1px solid #8c8; }
+    .hidden { display:none; }
   </style>
 </head>
 <body>
@@ -30,22 +38,34 @@
         <option value="3x8" selected>3×8</option>
         <option value="4x10" selected>4×10</option>
       </select>
-      <small>(Ctrl/Cmd+click para multi)</small>
+      <small class="small">(Ctrl/Cmd+click para multi)</small>
     </label>
   </div>
 
-  <label>Piezas (JSON)
-    <textarea id="json" rows="6">[
-  {"id":"P1","width_cm":70,"height_cm":56,"qty":5},
-  {"id":"P2","width_cm":50,"height_cm":56,"qty":5},
-  {"id":"P3","width_cm":40,"height_cm":65,"qty":1},
-  {"id":"P4","width_cm":90,"height_cm":40,"qty":2},
-  {"id":"P5","width_cm":61,"height_cm":65,"qty":2},
-  {"id":"P6","width_cm":308,"height_cm":128,"qty":1}
-]</textarea>
-  </label>
+  <!-- ENTRADA USER-FRIENDLY -->
+  <div class="btn-row">
+    <button id="addRow">+ Agregar fila</button>
+    <button id="clearRows">Limpiar tabla</button>
+    <button id="pasteCSV">Pegar desde Excel/CSV</button>
+    <span class="small">Formato de pegado: [Nombre opcional] | Ancho (cm) | Largo (cm) | Cantidad</span>
+  </div>
 
-  <div class="row controls">
+  <table id="piecesTable">
+    <thead>
+      <tr>
+        <th style="width:180px">Nombre de Pieza</th>
+        <th style="width:140px">Ancho (cm)</th>
+        <th style="width:140px">Largo (cm)</th>
+        <th style="width:120px">Cantidad</th>
+        <th style="width:80px">Borrar</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- filas dinámicas -->
+    </tbody>
+  </table>
+
+  <div class="row controls" style="margin-top:10px">
     <button id="run">Optimizar</button>
     <button id="prev" disabled>⟵ Lámina anterior</button>
     <button id="next" disabled>Siguiente lámina ⟶</button>
@@ -57,24 +77,117 @@
   <div class="legend" id="legend"></div>
 
   <script>
-    const canvas = document.getElementById('canvas');
+    // ---------- helpers UI ----------
+    const $ = s => document.querySelector(s);
+    const tableBody = $('#piecesTable tbody');
+    const canvas = $('#canvas');
     const ctx = canvas.getContext('2d');
-    const sheetInfo = document.getElementById('sheetInfo');
-    const legend = document.getElementById('legend');
-    const btnPrev = document.getElementById('prev');
-    const btnNext = document.getElementById('next');
-    const btnRun  = document.getElementById('run');
-    const btnDownload = document.getElementById('download');
-
-    let lastResp = null;
-    let bySheet = {};
-    let sheetIndexes = [];
-    let currentSheet = 0;
+    const sheetInfo = $('#sheetInfo');
+    const legend = $('#legend');
+    const btnPrev = $('#prev');
+    const btnNext = $('#next');
+    const btnRun  = $('#run');
+    const btnDownload = $('#download');
+    const btnAdd = $('#addRow');
+    const btnClear = $('#clearRows');
+    const btnPaste = $('#pasteCSV');
 
     function color(i){
       const pal = ["#f4cccc","#c9daf8","#d9ead3","#fff2cc","#d0e0e3","#ead1dc","#fce5cd","#d9d2e9","#cfe2f3","#ead1dc","#f9cb9c"];
       return pal[i % pal.length];
     }
+
+    // ---------- tabla dinámica ----------
+    function nextAutoName(){
+      const rows = [...tableBody.querySelectorAll('tr')];
+      const existing = rows.map(tr => tr.querySelector('.name').value.trim()).filter(Boolean);
+      let n = 1;
+      while (existing.includes('P'+n)) n++;
+      return 'P'+n;
+    }
+
+    function addRow(data){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input class="name" placeholder="(auto)"/></td>
+        <td><input class="w" type="number" step="0.01" min="0"/></td>
+        <td><input class="h" type="number" step="0.01" min="0"/></td>
+        <td><input class="qty" type="number" step="1" min="1" value="1"/></td>
+        <td><button class="del">✕</button></td>
+      `;
+      tableBody.appendChild(tr);
+
+      if (data){
+        if (data.name) tr.querySelector('.name').value = data.name;
+        tr.querySelector('.w').value = data.width_cm ?? '';
+        tr.querySelector('.h').value = data.height_cm ?? '';
+        tr.querySelector('.qty').value = data.qty ?? 1;
+      }
+      tr.querySelector('.del').onclick = ()=> tr.remove();
+    }
+
+    function clearRows(){ tableBody.innerHTML = ''; }
+
+    function readTable(){
+      const rows = [...tableBody.querySelectorAll('tr')];
+      const pieces = [];
+      rows.forEach((tr, idx) => {
+        const name = (tr.querySelector('.name').value || '').trim() || nextAutoName();
+        const w = parseFloat(tr.querySelector('.w').value);
+        const h = parseFloat(tr.querySelector('.h').value);
+        const qty = parseInt(tr.querySelector('.qty').value, 10);
+        if (!isFinite(w) || !isFinite(h) || !isFinite(qty) || w<=0 || h<=0 || qty<=0) return;
+        pieces.push({ id: name, width_cm: w, height_cm: h, qty: qty });
+      });
+      return pieces;
+    }
+
+    function saveLocal(){
+      const data = { api: $('#api').value.trim(), kerf: $('#kerf').value, formats: Array.from($('#formats').selectedOptions).map(o=>o.value), pieces: readTable() };
+      localStorage.setItem('opt_frontend_state', JSON.stringify(data));
+    }
+    function loadLocal(){
+      const raw = localStorage.getItem('opt_frontend_state');
+      if (!raw) return;
+      try{
+        const data = JSON.parse(raw);
+        if (data.api) $('#api').value = data.api;
+        if (data.kerf) $('#kerf').value = data.kerf;
+        if (Array.isArray(data.formats)){
+          [...$('#formats').options].forEach(opt => opt.selected = data.formats.includes(opt.value));
+        }
+        if (Array.isArray(data.pieces) && data.pieces.length){
+          clearRows();
+          data.pieces.forEach(p=> addRow(p));
+        }
+      }catch{}
+    }
+
+    // ---------- pegar CSV/Excel ----------
+    function parseCSVBlock(txt){
+      const lines = txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+      const out = [];
+      for (const line of lines){
+        const cells = line.split(/[\t,;]+/).map(s=>s.trim());
+        // posibles formatos:
+        // 4 cols: name, w, h, qty
+        // 3 cols: w, h, qty   (name auto)
+        if (cells.length === 4){
+          const [name, w, h, qty] = cells;
+          out.push({ name: name || '', width_cm: +w, height_cm: +h, qty: +qty });
+        } else if (cells.length === 3){
+          const [w, h, qty] = cells;
+          out.push({ name: '', width_cm: +w, height_cm: +h, qty: +qty });
+        }
+      }
+      return out.filter(r => isFinite(r.width_cm) && isFinite(r.height_cm) && isFinite(r.qty) && r.width_cm>0 && r.height_cm>0 && r.qty>0);
+    }
+
+    // ---------- dibujo / navegación ----------
+    let lastResp = null;
+    let bySheet = {};
+    let sheetIndexes = [];
+    let currentSheet = 0;
 
     function groupBySheet(resp){
       const out = {};
@@ -88,20 +201,12 @@
     function drawSheet(index){
       const sizes = lastResp.sheet_sizes_mm;
 
-      // datos lámina actual
       const lamIdx = sheetIndexes[index];
       const sheet = bySheet[lamIdx];
-      if (!sheet){
-        ctx.clearRect(0,0,canvas.width, canvas.height);
-        sheetInfo.textContent = "Sin datos.";
-        legend.textContent = "";
-        return;
-      }
       const fmt = sheet.fmt;
       const Wmm = sizes[fmt].W, Hmm = sizes[fmt].H;
       const labelFmt = sizes[fmt].label;
 
-      // canvas sizing
       const pad = 24;
       const cw = canvas.clientWidth || 1000;
       const ch = canvas.clientHeight || 560;
@@ -110,15 +215,12 @@
       const sy = (ch - 2*pad) / Hmm;
       const s = Math.min(sx, sy);
 
-      // limpiar y dibujar marco de lámina
       ctx.clearRect(0,0,cw,ch);
       ctx.lineWidth = 2; ctx.strokeStyle = "#111";
       ctx.strokeRect(pad, pad, Wmm*s, Hmm*s);
 
-      // título
       sheetInfo.textContent = `Lámina ${index+1} de ${sheetIndexes.length} — ${labelFmt}`;
 
-      // dibujar piezas
       const items = sheet.items;
       items.forEach((p,idx)=>{
         const x = pad + p.x_mm*s, y = pad + p.y_mm*s;
@@ -135,7 +237,6 @@
         ctx.fillText(`${p.piece_id} ${p.width_cm}×${p.height_cm}cm`, x + w/2, y + h/2);
       });
 
-      // leyenda: resumen global + conteo por tipo en esta lámina
       const counts = {};
       items.forEach(p => { counts[p.piece_id] = (counts[p.piece_id]||0) + 1; });
 
@@ -151,7 +252,6 @@
 
       legend.textContent = global + '\n' + perSheet;
 
-      // habilitar/inhabilitar navegación
       btnPrev.disabled = (index === 0);
       btnNext.disabled = (index === sheetIndexes.length - 1);
       btnDownload.disabled = false;
@@ -168,31 +268,55 @@
       link.click();
     };
 
+    // ---------- ejecución ----------
+    btnAdd.onclick = ()=> addRow();
+    btnClear.onclick = ()=> { if (confirm('¿Borrar todas las filas?')) { clearRows(); saveLocal(); } };
+    btnPaste.onclick = ()=>{
+      const txt = prompt("Pega aquí el bloque copiado desde Excel/CSV.\nColumnas: [Nombre opcional] | Ancho (cm) | Largo (cm) | Cantidad");
+      if (!txt) return;
+      const rows = parseCSVBlock(txt);
+      if (!rows.length){ alert("No se detectaron filas válidas."); return; }
+      rows.forEach(r => addRow(r));
+      saveLocal();
+    };
+
     btnRun.onclick = async ()=>{
-      const api = document.getElementById('api').value.trim();
-      const kerf = parseFloat(document.getElementById('kerf').value);
-      const formats = Array.from(document.getElementById('formats').selectedOptions).map(o=>o.value);
-      let pieces;
-      try { pieces = JSON.parse(document.getElementById('json').value); }
-      catch(e){ alert("JSON inválido"); return; }
+      const api = $('#api').value.trim();
+      const kerf = parseFloat($('#kerf').value);
+      const formats = Array.from($('#formats').selectedOptions).map(o=>o.value);
+      const pieces = readTable();
+
       if(!api || !api.toLowerCase().includes('/optimize')) {
         alert('Pega la URL del backend terminada en /optimize');
         return;
       }
+      if(!isFinite(kerf) || kerf < 0){ alert('Kerf inválido'); return; }
+      if(!pieces.length){ alert('Agrega al menos una pieza'); return; }
+
+      // guarda estado
+      saveLocal();
 
       const body = { kerf_mm: kerf, pieces, allowed_formats: formats };
-      const r = await fetch(api, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      let r;
+      try{
+        r = await fetch(api, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      }catch(e){
+        alert("No se pudo contactar el backend. Verifica la URL en Render.");
+        return;
+      }
       if (!r.ok){
-        alert("Error en backend (Render). Revisa que el servicio esté Live y la URL sea correcta.");
+        const txt = await r.text();
+        alert("Error en backend:\n" + txt);
         return;
       }
       lastResp = await r.json();
+
+      // agrupar y navegar
       bySheet = groupBySheet(lastResp);
       sheetIndexes = Object.keys(bySheet).map(Number).sort((a,b)=>a-b);
       currentSheet = 0;
 
       if (sheetIndexes.length === 0){
-        // no hay piezas (p. ej. todas fuera de formato)
         const cw = canvas.clientWidth || 1000;
         const ch = canvas.clientHeight || 560;
         canvas.width = cw; canvas.height = ch;
@@ -209,6 +333,15 @@
 
       drawSheet(currentSheet);
     };
+
+    // estado inicial
+    addRow({name:'P1', width_cm:70, height_cm:56, qty:5});
+    addRow({name:'P2', width_cm:50, height_cm:56, qty:5});
+    addRow({name:'P3', width_cm:40, height_cm:65, qty:1});
+    addRow({name:'P4', width_cm:90, height_cm:40, qty:2});
+    addRow({name:'P5', width_cm:61, height_cm:65, qty:2});
+    addRow({name:'P6', width_cm:308, height_cm:128, qty:1});
+    loadLocal();
   </script>
 </body>
 </html>
