@@ -6,18 +6,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
     body { font-family: system-ui, Arial; margin: 16px; }
-    #canvas { border:1px solid #111; width:100%; max-width:900px; height:500px; }
-    .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+    #canvas { border:1px solid #111; width:100%; max-width:1000px; height:560px; display:block; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; align-items:flex-end; }
     label { display:flex; flex-direction:column; font-size:14px; }
     input, select, button, textarea { padding:8px; font-size:14px; }
-    .legend { margin-top: 8px; font-size:12px; }
+    .legend { margin-top: 8px; font-size:13px; line-height:1.4; white-space:pre-wrap; }
+    .controls { display:flex; gap:8px; align-items:center; }
+    .sheet-title { font-weight:700; margin:8px 0; }
   </style>
 </head>
 <body>
   <h2>Optimizador de Láminas (gratis)</h2>
+
   <div class="row">
     <label>Backend URL
-      <input id="api" placeholder="https://tu-backend-onrender.com/optimize"/>
+      <input id="api" placeholder="https://corte-de-laminas.onrender.com/optimize"/>
     </label>
     <label>Kerf (mm)
       <input id="kerf" type="number" step="0.1" value="2.5"/>
@@ -31,7 +34,7 @@
     </label>
   </div>
 
-  <label> Piezas (JSON)
+  <label>Piezas (JSON)
     <textarea id="json" rows="6">[
   {"id":"P1","width_cm":70,"height_cm":56,"qty":5},
   {"id":"P2","width_cm":50,"height_cm":56,"qty":5},
@@ -41,8 +44,13 @@
   {"id":"P6","width_cm":308,"height_cm":128,"qty":1}
 ]</textarea>
   </label>
-  <div class="row">
+
+  <div class="row controls">
     <button id="run">Optimizar</button>
+    <button id="prev" disabled>⟵ Lámina anterior</button>
+    <button id="next" disabled>Siguiente lámina ⟶</button>
+    <button id="download" disabled>Descargar PNG</button>
+    <span id="sheetInfo" class="sheet-title"></span>
   </div>
 
   <canvas id="canvas"></canvas>
@@ -51,49 +59,73 @@
   <script>
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
+    const sheetInfo = document.getElementById('sheetInfo');
+    const legend = document.getElementById('legend');
+    const btnPrev = document.getElementById('prev');
+    const btnNext = document.getElementById('next');
+    const btnRun  = document.getElementById('run');
+    const btnDownload = document.getElementById('download');
+
+    let lastResp = null;
+    let bySheet = {};
+    let sheetIndexes = [];
+    let currentSheet = 0;
 
     function color(i){
-      const pal = ["#f4cccc","#c9daf8","#d9ead3","#fff2cc","#d0e0e3","#ead1dc","#fce5cd","#d9d2e9"];
+      const pal = ["#f4cccc","#c9daf8","#d9ead3","#fff2cc","#d0e0e3","#ead1dc","#fce5cd","#d9d2e9","#cfe2f3","#ead1dc","#f9cb9c"];
       return pal[i % pal.length];
     }
 
-    function draw(resp){
-      const sizes = resp.sheet_sizes_mm;
-      const firstFmt = resp.placements.length ? resp.placements[0].format : "4x10";
-      const Wmm = sizes[firstFmt].W, Hmm = sizes[firstFmt].H;
+    function groupBySheet(resp){
+      const out = {};
+      resp.placements.forEach(p => {
+        if(!out[p.lamina_index]) out[p.lamina_index] = {fmt:p.format, items:[]};
+        out[p.lamina_index].items.push(p);
+      });
+      return out;
+    }
 
-      const pad = 20;
-      const cw = canvas.clientWidth || 900;
-      const ch = canvas.clientHeight || 500;
+    function drawSheet(index){
+      const sizes = lastResp.sheet_sizes_mm;
+
+      // datos lámina actual
+      const lamIdx = sheetIndexes[index];
+      const sheet = bySheet[lamIdx];
+      if (!sheet){
+        ctx.clearRect(0,0,canvas.width, canvas.height);
+        sheetInfo.textContent = "Sin datos.";
+        legend.textContent = "";
+        return;
+      }
+      const fmt = sheet.fmt;
+      const Wmm = sizes[fmt].W, Hmm = sizes[fmt].H;
+      const labelFmt = sizes[fmt].label;
+
+      // canvas sizing
+      const pad = 24;
+      const cw = canvas.clientWidth || 1000;
+      const ch = canvas.clientHeight || 560;
       canvas.width = cw; canvas.height = ch;
       const sx = (cw - 2*pad) / Wmm;
       const sy = (ch - 2*pad) / Hmm;
       const s = Math.min(sx, sy);
 
+      // limpiar y dibujar marco de lámina
       ctx.clearRect(0,0,cw,ch);
       ctx.lineWidth = 2; ctx.strokeStyle = "#111";
       ctx.strokeRect(pad, pad, Wmm*s, Hmm*s);
 
-      const bySheet = {};
-      resp.placements.forEach(p => {
-        bySheet[p.lamina_index] = bySheet[p.lamina_index] || {fmt:p.format, items:[]};
-        bySheet[p.lamina_index].items.push(p);
-      });
+      // título
+      sheetInfo.textContent = `Lámina ${index+1} de ${sheetIndexes.length} — ${labelFmt}`;
 
-      // dibujar solo la primera lámina (MVP)
-      const idxs = Object.keys(bySheet).map(Number).sort((a,b)=>a-b);
-      if (!idxs.length) {
-        document.getElementById('legend').innerText = "No hay piezas para dibujar.";
-        return;
-      }
-      const sheetIdx = idxs[0];
-      const items = bySheet[sheetIdx].items;
-
+      // dibujar piezas
+      const items = sheet.items;
       items.forEach((p,idx)=>{
+        const x = pad + p.x_mm*s, y = pad + p.y_mm*s;
+        const w = p.w_mm*s,      h = p.h_mm*s;
+
         ctx.fillStyle = color(idx);
         ctx.strokeStyle = "#666";
-        const x = pad + p.x_mm*s, y = pad + p.y_mm*s;
-        const w = p.w_mm*s, h = p.h_mm*s;
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
 
@@ -103,24 +135,79 @@
         ctx.fillText(`${p.piece_id} ${p.width_cm}×${p.height_cm}cm`, x + w/2, y + h/2);
       });
 
-      document.getElementById('legend').innerText =
-        `Recomendado: ${resp.recommended} | Láminas: ${resp.total_sheets} | Eficiencia: ${(resp.utilization*100).toFixed(2)}%` +
-        (resp.out_of_format.length ? ` | Fuera de formato: ${resp.out_of_format.map(p=>p.id + ' ' + p.width_cm + '×' + p.height_cm + 'cm').join(', ')}` : '');
+      // leyenda: resumen global + conteo por tipo en esta lámina
+      const counts = {};
+      items.forEach(p => { counts[p.piece_id] = (counts[p.piece_id]||0) + 1; });
+
+      const global =
+        `Recomendado: ${lastResp.recommended} | Láminas: ${lastResp.total_sheets} | ` +
+        `Eficiencia: ${(lastResp.utilization*100).toFixed(2)}%` +
+        (lastResp.out_of_format.length
+          ? ` | Fuera de formato: ${lastResp.out_of_format.map(p=>p.id+' '+p.width_cm+'×'+p.height_cm+'cm').join(', ')}`
+          : '');
+
+      const perSheet = `Conteo en lámina ${index+1}: ` +
+        Object.keys(counts).sort().map(k=>`${k}×${counts[k]}`).join('  |  ');
+
+      legend.textContent = global + '\n' + perSheet;
+
+      // habilitar/inhabilitar navegación
+      btnPrev.disabled = (index === 0);
+      btnNext.disabled = (index === sheetIndexes.length - 1);
+      btnDownload.disabled = false;
     }
 
-    document.getElementById('run').onclick = async () => {
+    btnPrev.onclick = ()=>{ if(currentSheet>0){ currentSheet--; drawSheet(currentSheet); } };
+    btnNext.onclick = ()=>{ if(currentSheet<sheetIndexes.length-1){ currentSheet++; drawSheet(currentSheet); } };
+
+    btnDownload.onclick = ()=>{
+      const link = document.createElement('a');
+      const idx = currentSheet+1;
+      link.download = `patron_lamina_${idx}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    };
+
+    btnRun.onclick = async ()=>{
       const api = document.getElementById('api').value.trim();
       const kerf = parseFloat(document.getElementById('kerf').value);
       const formats = Array.from(document.getElementById('formats').selectedOptions).map(o=>o.value);
       let pieces;
       try { pieces = JSON.parse(document.getElementById('json').value); }
       catch(e){ alert("JSON inválido"); return; }
+      if(!api || !api.toLowerCase().includes('/optimize')) {
+        alert('Pega la URL del backend terminada en /optimize');
+        return;
+      }
 
       const body = { kerf_mm: kerf, pieces, allowed_formats: formats };
       const r = await fetch(api, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-      if (!r.ok){ alert("Error en backend"); return; }
-      const resp = await r.json();
-      draw(resp);
+      if (!r.ok){
+        alert("Error en backend (Render). Revisa que el servicio esté Live y la URL sea correcta.");
+        return;
+      }
+      lastResp = await r.json();
+      bySheet = groupBySheet(lastResp);
+      sheetIndexes = Object.keys(bySheet).map(Number).sort((a,b)=>a-b);
+      currentSheet = 0;
+
+      if (sheetIndexes.length === 0){
+        // no hay piezas (p. ej. todas fuera de formato)
+        const cw = canvas.clientWidth || 1000;
+        const ch = canvas.clientHeight || 560;
+        canvas.width = cw; canvas.height = ch;
+        ctx.clearRect(0,0,cw,ch);
+        sheetInfo.textContent = "Sin láminas para dibujar";
+        legend.textContent =
+          `Recomendado: ${lastResp.recommended} | Láminas: 0 | Eficiencia: 0%` +
+          (lastResp.out_of_format.length
+            ? ` | Fuera de formato: ${lastResp.out_of_format.map(p=>p.id+' '+p.width_cm+'×'+p.height_cm+'cm').join(', ')}`
+            : '');
+        btnPrev.disabled = btnNext.disabled = btnDownload.disabled = true;
+        return;
+      }
+
+      drawSheet(currentSheet);
     };
   </script>
 </body>
