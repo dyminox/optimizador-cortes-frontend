@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Optimizador de Láminas (gratis)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, Arial; margin: 16px; }
+    #canvas { border:1px solid #111; width:100%; max-width:900px; height:500px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+    label { display:flex; flex-direction:column; font-size:14px; }
+    input, select, button, textarea { padding:8px; font-size:14px; }
+    .legend { margin-top: 8px; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h2>Optimizador de Láminas (gratis)</h2>
+  <div class="row">
+    <label>Backend URL
+      <input id="api" placeholder="https://tu-backend-onrender.com/optimize"/>
+    </label>
+    <label>Kerf (mm)
+      <input id="kerf" type="number" step="0.1" value="2.5"/>
+    </label>
+    <label>Formatos permitidos
+      <select id="formats" multiple>
+        <option value="3x8" selected>3×8</option>
+        <option value="4x10" selected>4×10</option>
+      </select>
+      <small>(Ctrl/Cmd+click para multi)</small>
+    </label>
+  </div>
+
+  <label> Piezas (JSON)
+    <textarea id="json" rows="6">[
+  {"id":"P1","width_cm":70,"height_cm":56,"qty":5},
+  {"id":"P2","width_cm":50,"height_cm":56,"qty":5},
+  {"id":"P3","width_cm":40,"height_cm":65,"qty":1},
+  {"id":"P4","width_cm":90,"height_cm":40,"qty":2},
+  {"id":"P5","width_cm":61,"height_cm":65,"qty":2},
+  {"id":"P6","width_cm":308,"height_cm":128,"qty":1}
+]</textarea>
+  </label>
+  <div class="row">
+    <button id="run">Optimizar</button>
+  </div>
+
+  <canvas id="canvas"></canvas>
+  <div class="legend" id="legend"></div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    function color(i){
+      const pal = ["#f4cccc","#c9daf8","#d9ead3","#fff2cc","#d0e0e3","#ead1dc","#fce5cd","#d9d2e9"];
+      return pal[i % pal.length];
+    }
+
+    function draw(resp){
+      const sizes = resp.sheet_sizes_mm;
+      const firstFmt = resp.placements.length ? resp.placements[0].format : "4x10";
+      const Wmm = sizes[firstFmt].W, Hmm = sizes[firstFmt].H;
+
+      const pad = 20;
+      const cw = canvas.clientWidth || 900;
+      const ch = canvas.clientHeight || 500;
+      canvas.width = cw; canvas.height = ch;
+      const sx = (cw - 2*pad) / Wmm;
+      const sy = (ch - 2*pad) / Hmm;
+      const s = Math.min(sx, sy);
+
+      ctx.clearRect(0,0,cw,ch);
+      ctx.lineWidth = 2; ctx.strokeStyle = "#111";
+      ctx.strokeRect(pad, pad, Wmm*s, Hmm*s);
+
+      const bySheet = {};
+      resp.placements.forEach(p => {
+        bySheet[p.lamina_index] = bySheet[p.lamina_index] || {fmt:p.format, items:[]};
+        bySheet[p.lamina_index].items.push(p);
+      });
+
+      // dibujar solo la primera lámina (MVP)
+      const idxs = Object.keys(bySheet).map(Number).sort((a,b)=>a-b);
+      if (!idxs.length) {
+        document.getElementById('legend').innerText = "No hay piezas para dibujar.";
+        return;
+      }
+      const sheetIdx = idxs[0];
+      const items = bySheet[sheetIdx].items;
+
+      items.forEach((p,idx)=>{
+        ctx.fillStyle = color(idx);
+        ctx.strokeStyle = "#666";
+        const x = pad + p.x_mm*s, y = pad + p.y_mm*s;
+        const w = p.w_mm*s, h = p.h_mm*s;
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeRect(x, y, w, h);
+
+        ctx.fillStyle="#000";
+        ctx.font="12px system-ui";
+        ctx.textAlign="center"; ctx.textBaseline="middle";
+        ctx.fillText(`${p.piece_id} ${p.width_cm}×${p.height_cm}cm`, x + w/2, y + h/2);
+      });
+
+      document.getElementById('legend').innerText =
+        `Recomendado: ${resp.recommended} | Láminas: ${resp.total_sheets} | Eficiencia: ${(resp.utilization*100).toFixed(2)}%` +
+        (resp.out_of_format.length ? ` | Fuera de formato: ${resp.out_of_format.map(p=>p.id + ' ' + p.width_cm + '×' + p.height_cm + 'cm').join(', ')}` : '');
+    }
+
+    document.getElementById('run').onclick = async () => {
+      const api = document.getElementById('api').value.trim();
+      const kerf = parseFloat(document.getElementById('kerf').value);
+      const formats = Array.from(document.getElementById('formats').selectedOptions).map(o=>o.value);
+      let pieces;
+      try { pieces = JSON.parse(document.getElementById('json').value); }
+      catch(e){ alert("JSON inválido"); return; }
+
+      const body = { kerf_mm: kerf, pieces, allowed_formats: formats };
+      const r = await fetch(api, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if (!r.ok){ alert("Error en backend"); return; }
+      const resp = await r.json();
+      draw(resp);
+    };
+  </script>
+</body>
+</html>
