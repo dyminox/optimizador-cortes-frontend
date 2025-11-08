@@ -18,8 +18,6 @@
     .sheet-title { font-weight:700; margin:8px 0; }
     .small { font-size:12px; color:#666; }
     .btn-row { display:flex; gap:8px; flex-wrap:wrap; }
-    .danger { background:#fee; border:1px solid #e88; }
-    .ok { background:#efe; border:1px solid #8c8; }
     .hidden { display:none; }
   </style>
 </head>
@@ -27,9 +25,6 @@
   <h2>Optimizador de Láminas (gratis)</h2>
 
   <div class="row">
-    <label>Backend URL
-      <input id="api" placeholder="https://corte-de-laminas.onrender.com/optimize"/>
-    </label>
     <label>Kerf (mm)
       <input id="kerf" type="number" step="0.1" value="2.5"/>
     </label>
@@ -77,7 +72,9 @@
   <div class="legend" id="legend"></div>
 
   <script>
-    // ---------- helpers UI ----------
+    // BACKEND FIJO (hardcodeado)
+    const API_URL = "https://corte-de-laminas.onrender.com/optimize";
+
     const $ = s => document.querySelector(s);
     const tableBody = $('#piecesTable tbody');
     const canvas = $('#canvas');
@@ -131,7 +128,7 @@
     function readTable(){
       const rows = [...tableBody.querySelectorAll('tr')];
       const pieces = [];
-      rows.forEach((tr, idx) => {
+      rows.forEach((tr) => {
         const name = (tr.querySelector('.name').value || '').trim() || nextAutoName();
         const w = parseFloat(tr.querySelector('.w').value);
         const h = parseFloat(tr.querySelector('.h').value);
@@ -143,7 +140,11 @@
     }
 
     function saveLocal(){
-      const data = { api: $('#api').value.trim(), kerf: $('#kerf').value, formats: Array.from($('#formats').selectedOptions).map(o=>o.value), pieces: readTable() };
+      const data = {
+        kerf: $('#kerf').value,
+        formats: Array.from($('#formats').selectedOptions).map(o=>o.value),
+        pieces: readTable()
+      };
       localStorage.setItem('opt_frontend_state', JSON.stringify(data));
     }
     function loadLocal(){
@@ -151,7 +152,6 @@
       if (!raw) return;
       try{
         const data = JSON.parse(raw);
-        if (data.api) $('#api').value = data.api;
         if (data.kerf) $('#kerf').value = data.kerf;
         if (Array.isArray(data.formats)){
           [...$('#formats').options].forEach(opt => opt.selected = data.formats.includes(opt.value));
@@ -169,7 +169,6 @@
       const out = [];
       for (const line of lines){
         const cells = line.split(/[\t,;]+/).map(s=>s.trim());
-        // posibles formatos:
         // 4 cols: name, w, h, qty
         // 3 cols: w, h, qty   (name auto)
         if (cells.length === 4){
@@ -269,7 +268,7 @@
     };
 
     // ---------- ejecución ----------
-    btnAdd.onclick = ()=> addRow();
+    btnAdd.onclick = ()=> { addRow(); saveLocal(); };
     btnClear.onclick = ()=> { if (confirm('¿Borrar todas las filas?')) { clearRows(); saveLocal(); } };
     btnPaste.onclick = ()=>{
       const txt = prompt("Pega aquí el bloque copiado desde Excel/CSV.\nColumnas: [Nombre opcional] | Ancho (cm) | Largo (cm) | Cantidad");
@@ -281,27 +280,21 @@
     };
 
     btnRun.onclick = async ()=>{
-      const api = $('#api').value.trim();
       const kerf = parseFloat($('#kerf').value);
       const formats = Array.from($('#formats').selectedOptions).map(o=>o.value);
       const pieces = readTable();
 
-      if(!api || !api.toLowerCase().includes('/optimize')) {
-        alert('Pega la URL del backend terminada en /optimize');
-        return;
-      }
       if(!isFinite(kerf) || kerf < 0){ alert('Kerf inválido'); return; }
       if(!pieces.length){ alert('Agrega al menos una pieza'); return; }
 
-      // guarda estado
       saveLocal();
 
       const body = { kerf_mm: kerf, pieces, allowed_formats: formats };
       let r;
       try{
-        r = await fetch(api, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        r = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       }catch(e){
-        alert("No se pudo contactar el backend. Verifica la URL en Render.");
+        alert("No se pudo contactar el backend. Verifica que Render esté Live.");
         return;
       }
       if (!r.ok){
@@ -311,7 +304,6 @@
       }
       lastResp = await r.json();
 
-      // agrupar y navegar
       bySheet = groupBySheet(lastResp);
       sheetIndexes = Object.keys(bySheet).map(Number).sort((a,b)=>a-b);
       currentSheet = 0;
